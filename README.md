@@ -51,13 +51,15 @@ flowchart LR
 - yt-dlp (`brew install yt-dlp`)
 
 ### 2. Launch the Studio Dashboard
-```bash
-python3 autoclip/web_server.py
-```
-Open [http://localhost:7860](http://localhost:7860) in your browser.
+- **macOS App**: Double-click `AutoClip.app` in Finder.
+- **One-Click Script**: Double-click `AutoClip.command` or run `./launch.sh`.
+- **Manual CLI**: Run `python3 autoclip/web_server.py`.
+
+The studio will automatically open in your default browser at [http://localhost:7860](http://localhost:7860).
+To stop the background server anytime: run `./stop.sh`.
 
 ### 3. CLI Batch Mode
 ```bash
 python3 scripts/run_clipper.py --url "https://youtube.com/watch?v=..." --channel f1 --max-clips 3
 ```
-Output shorts will be generated in `output/formula1/`.
+Output shorts will be generated in `output/{niche}/`.
