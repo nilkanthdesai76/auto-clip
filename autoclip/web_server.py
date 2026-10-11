@@ -232,6 +232,33 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .profile-card.auto-selected .profile-auto-tag { display: inline-block; }
 
+    /* Portrait Framing Selector */
+    .layout-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    .layout-card {
+      background: var(--card-bg);
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .layout-card:hover { border-color: rgba(255,255,255,0.25); }
+    .layout-card.active {
+      border-color: #3b82f6;
+      background: #151828;
+      box-shadow: 0 0 20px rgba(59, 130, 246, 0.2);
+    }
+    .layout-card-header { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; color: #fff; }
+    .layout-desc { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+
     /* Action Row */
     .action-row {
       display: flex;
@@ -414,6 +441,35 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
     <div class="profile-grid" id="profileGrid"></div>
 
+    <!-- 3. Portrait Framing Mode -->
+    <div class="section-title">
+      <span>3. 9:16 Portrait Framing Mode</span>
+      <span style="font-size: 12px; color: var(--text-muted); font-weight: normal;">(Choose how your video is formatted for vertical mobile viewing)</span>
+    </div>
+    <div class="layout-grid" id="layoutGrid">
+      <div class="layout-card active" id="layout_crop_fill" onclick="selectLayout('crop_fill')">
+        <div class="layout-card-header">
+          <span>📱</span>
+          <span>Full Portrait Fill (Recommended)</span>
+        </div>
+        <div class="layout-desc">100% Edge-to-edge vertical screen coverage. No blurred bars. Maximizes mobile viewer engagement and retention.</div>
+      </div>
+      <div class="layout-card" id="layout_split_screen" onclick="selectLayout('split_screen')">
+        <div class="layout-card-header">
+          <span>🥞</span>
+          <span>Split-Screen Dual Stack</span>
+        </div>
+        <div class="layout-desc">Top 50% zoomed close-up + Bottom 50% full view. Ideal for action, gaming, reaction & commentary.</div>
+      </div>
+      <div class="layout-card" id="layout_fit_blur" onclick="selectLayout('fit_blur')">
+        <div class="layout-card-header">
+          <span>🪟</span>
+          <span>Ambient Blurred Fit</span>
+        </div>
+        <div class="layout-desc">Preserves entire 16:9 aspect ratio in the center with dynamic blurred background glow.</div>
+      </div>
+    </div>
+
     <!-- Action & Status -->
     <div class="action-row">
       <button class="btn-detect" id="btnDetect" onclick="detectViralHooks()">⚡ Scan & Detect Viral Hooks</button>
@@ -441,7 +497,18 @@ HTML_PAGE = """<!DOCTYPE html>
 
     let selectedProfileId = "f1";
     let autoDetectedId = null;
+    let selectedLayoutMode = "crop_fill";
     let currentClips = [];
+
+    function selectLayout(mode) {
+      selectedLayoutMode = mode;
+      document.querySelectorAll(".layout-card").forEach(c => c.classList.remove("active"));
+      const card = document.getElementById(`layout_${mode}`);
+      if (card) card.classList.add("active");
+      const status = document.getElementById("statusMessage");
+      const label = mode === "crop_fill" ? "Full Portrait Fill (100% Screen)" : (mode === "split_screen" ? "Split-Screen Dual Stack" : "Ambient Blurred Fit");
+      status.innerText = `Framing layout set to: ${label}`;
+    }
 
     function renderProfiles() {
       const container = document.getElementById("profileGrid");
@@ -587,7 +654,8 @@ HTML_PAGE = """<!DOCTYPE html>
             clip_id: clip.id,
             start_seconds: clip.start_seconds,
             duration: clip.duration,
-            words: clip.words || []
+            words: clip.words || [],
+            layout_mode: selectedLayoutMode
           })
         });
 
@@ -817,6 +885,8 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
 
                 build_ass_subtitle_file(rebased_phrases, sub_path, profile)
 
+                layout_mode = data.get("layout_mode", "crop_fill")
+
                 # 3. Render 9:16 vertical short
                 rendered_path = video_engine.render_short(
                     input_video_path=video_path,
@@ -824,7 +894,8 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
                     duration=duration,
                     subtitle_ass_path=sub_path,
                     output_mp4_path=out_mp4,
-                    profile=profile
+                    profile=profile,
+                    layout_mode=layout_mode
                 )
 
                 # Return accessible URL

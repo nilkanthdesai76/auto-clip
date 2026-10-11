@@ -150,7 +150,8 @@ class AutoClipPipeline:
                 duration=clip.duration,
                 subtitle_ass_path=sub_path,
                 output_mp4_path=out_mp4,
-                profile=self.profile
+                profile=self.profile,
+                layout_mode=self.profile.layout_mode
             )
 
             # Save YouTube metadata JSON
