@@ -348,12 +348,26 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .btn-download {
       flex: 1;
-      padding: 10px;
-      background: #27272a;
+      padding: 10px 14px;
+      background: #2563eb;
       color: #fff;
-      font-size: 12px;
+      font-size: 13px;
+      font-weight: 700;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+      transition: all 0.2s ease;
     }
-    .btn-download:hover { background: #3f3f46; }
+    .btn-download:hover {
+      background: #1d4ed8;
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.5);
+      transform: translateY(-1px);
+    }
     .btn-copy {
       padding: 10px 14px;
       background: #18181b;
@@ -594,6 +608,38 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
+    function triggerDownload(event, clipId, videoUrl) {
+      if (event) event.preventDefault();
+      let targetUrl = videoUrl;
+      if (!targetUrl) {
+        const vid = document.getElementById(`vid_${clipId}`);
+        targetUrl = vid ? vid.getAttribute("src") : "";
+      }
+      if (!targetUrl) {
+        alert("Please render the video first before downloading.");
+        return;
+      }
+
+      // Ensure ?download=1 is appended to signal attachment download
+      const cleanUrl = targetUrl.split("?")[0];
+      const filename = cleanUrl.split("/").pop() || `${clipId}.mp4`;
+      const downloadEndpoint = `${cleanUrl}?download=1`;
+
+      const status = document.getElementById("statusMessage");
+      if (status) status.innerText = `📥 Downloading ${filename} to your Mac...`;
+
+      // Trigger programmatic download via invisible anchor
+      const link = document.createElement("a");
+      link.href = downloadEndpoint;
+      link.setAttribute("download", filename);
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        document.body.removeChild(link);
+      }, 300);
+    }
+
     function renderClips(clips) {
       const grid = document.getElementById("clipsGrid");
       if (!clips || clips.length === 0) {
@@ -601,20 +647,29 @@ HTML_PAGE = """<!DOCTYPE html>
         return;
       }
 
-      grid.innerHTML = clips.map((c, idx) => `
+      grid.innerHTML = clips.map((c, idx) => {
+        const isRendered = Boolean(c.rendered_url);
+        const videoSrc = c.rendered_url || "";
+        const downloadUrl = isRendered ? `${c.rendered_url}?download=1` : "#";
+        const filename = isRendered ? c.rendered_url.split("/").pop() : `${c.id}.mp4`;
+        const sizeBadge = c.file_size_mb ? ` • ${c.file_size_mb} MB` : "";
+
+        return `
         <div class="clip-card" id="card_${c.id}" style="--card-accent: ${c.color || '#e10600'}">
           <div class="clip-header">
             <div class="clip-title">${c.title}</div>
             <div class="score-badge">🔥 ${c.virality_score}/100</div>
           </div>
-          <div class="clip-meta">⏱️ ${c.formatted_time_range || c.duration + 's'} • ${c.hashtags ? c.hashtags.slice(0, 3).join(' ') : '#Shorts'}</div>
+          <div class="clip-meta">⏱️ ${c.formatted_time_range || c.duration + 's'} • ${c.hashtags ? c.hashtags.slice(0, 3).join(' ') : '#Shorts'}${sizeBadge}</div>
           <div class="clip-hook"><strong>Hook:</strong> "${c.hook}"</div>
 
           <!-- Video Player Box (shown once rendered) -->
-          <div class="player-box" id="player_${c.id}">
-            <video class="preview-player" id="vid_${c.id}" controls playsinline></video>
+          <div class="player-box ${isRendered ? 'visible' : ''}" id="player_${c.id}">
+            <video class="preview-player" id="vid_${c.id}" controls playsinline src="${videoSrc}"></video>
             <div class="video-actions">
-              <a id="download_${c.id}" class="btn-download" download>⬇️ Download MP4</a>
+              <a id="download_${c.id}" class="btn-download" href="${downloadUrl}" download="${filename}" onclick="triggerDownload(event, '${c.id}', '${videoSrc}')">
+                ⬇️ Download MP4 ${c.file_size_mb ? '(' + c.file_size_mb + 'MB)' : ''}
+              </a>
               <button class="btn-copy" onclick="copyMeta('${c.id}')">📋 Copy Meta</button>
             </div>
           </div>
@@ -623,11 +678,12 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="progress-bar-fill" id="fill_${c.id}"></div>
           </div>
 
-          <button class="btn-render-action" id="btn_render_${c.id}" onclick="renderClip('${c.id}', ${idx})">
-            🎬 Render 9:16 Short (Video + Audio)
+          <button class="btn-render-action" id="btn_render_${c.id}" onclick="renderClip('${c.id}', ${idx})" style="${isRendered ? 'background: #10b981;' : ''}">
+            ${isRendered ? '🔄 Re-Render 9:16 Short' : '🎬 Render 9:16 Short (Video + Audio)'}
           </button>
         </div>
-      `).join("");
+      `;
+      }).join("");
     }
 
     async function renderClip(clipId, clipIdx) {
@@ -663,20 +719,30 @@ HTML_PAGE = """<!DOCTYPE html>
         fill.style.width = "100%";
 
         if (data.status === "success") {
-          btn.innerText = "✅ Rendered Successfully";
+          btn.innerText = "🔄 Re-Render 9:16 Short";
+          btn.disabled = false;
           btn.style.background = "#10b981";
           
-          // Display Video Player
+          // Display Video Player & Wire Up Instant Download
           const playerBox = document.getElementById(`player_${clipId}`);
           const vid = document.getElementById(`vid_${clipId}`);
           const dl = document.getElementById(`download_${clipId}`);
+          const filename = data.video_url.split("/").pop();
 
           playerBox.classList.add("visible");
           vid.src = data.video_url;
           vid.load();
-          dl.href = data.video_url;
+          
+          dl.href = `${data.video_url}?download=1`;
+          dl.setAttribute("download", filename);
+          dl.innerHTML = `⬇️ Download MP4 (${data.file_size_mb} MB)`;
+          dl.onclick = (e) => triggerDownload(e, clipId, data.video_url);
 
-          status.innerText = `Render complete! Play the video above or download the MP4.`;
+          // Update clip in local state
+          clip.rendered_url = data.video_url;
+          clip.file_size_mb = data.file_size_mb;
+
+          status.innerText = `Render complete (${data.file_size_mb} MB)! Click 'Download MP4' to save to your Mac.`;
         } else {
           btn.innerText = "❌ Render Failed";
           btn.disabled = false;
@@ -692,7 +758,7 @@ HTML_PAGE = """<!DOCTYPE html>
     function copyMeta(clipId) {
       const clip = currentClips.find(c => c.id === clipId);
       if (!clip) return;
-      const text = `${clip.title}\\n\\n${clip.hook}\\n\\nSubscribe to ${clip.handle || '@AutoClip'}!\\n\\n${(clip.hashtags || []).join(' ')}`;
+      const text = `${clip.title}\n\n${clip.hook}\n\nSubscribe to ${clip.handle || '@AutoClip'}!\n\n${(clip.hashtags || []).join(' ')}`;
       navigator.clipboard.writeText(text);
       alert("Copied YouTube Shorts title and description to clipboard!");
     }
@@ -798,9 +864,14 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
             detector = HookDetector(profile)
             clips = detector.detect_clips(words, max_clips=4)
 
-            # Store words in cache for render
+            # Store words in cache for render and check if clips are already generated
             response_clips = []
             for c in clips:
+                expected_file = OUTPUT_DIR / profile.niche / f"{c.id}_{profile.niche}.mp4"
+                has_rendered = expected_file.exists() and expected_file.stat().st_size > 0
+                rendered_url = f"/videos/{profile.niche}/{c.id}_{profile.niche}.mp4" if has_rendered else None
+                file_size_mb = round(expected_file.stat().st_size / (1024 * 1024), 2) if has_rendered else None
+
                 response_clips.append({
                     "id": c.id,
                     "title": c.title,
@@ -813,7 +884,9 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
                     "color": profile.highlight_color,
                     "formatted_time_range": c.formatted_time_range,
                     "handle": profile.handle,
-                    "words": [{"word": w.word, "start": w.start, "end": w.end} for w in c.words]
+                    "words": [{"word": w.word, "start": w.start, "end": w.end} for w in c.words],
+                    "rendered_url": rendered_url,
+                    "file_size_mb": file_size_mb
                 })
 
             self._send_json({"profile": profile.id, "clips": response_clips})
@@ -823,8 +896,22 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
             # Serve rendered MP4 files from output directory
             rel_path = parsed.path.replace("/videos/", "")
             file_path = OUTPUT_DIR / rel_path
+            is_download = "download" in params or params.get("dl", ["0"])[0] == "1"
             if file_path.exists() and file_path.is_file():
-                self._stream_video_file(file_path)
+                self._stream_video_file(file_path, as_attachment=is_download)
+            else:
+                self.send_error(404, "Video file not found")
+            return
+
+        elif parsed.path == "/api/download":
+            # Force-download endpoint for any rendered short
+            file_param = params.get("file", [""])[0]
+            if not file_param:
+                self.send_error(400, "Missing file parameter")
+                return
+            target_path = (OUTPUT_DIR / file_param.lstrip("/")).resolve()
+            if str(target_path).startswith(str(OUTPUT_DIR.resolve())) and target_path.exists() and target_path.is_file():
+                self._stream_video_file(target_path, as_attachment=True)
             else:
                 self.send_error(404, "Video file not found")
             return
@@ -913,10 +1000,23 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
 
         self.send_error(404, "Endpoint not found")
 
-    def _stream_video_file(self, file_path: Path):
-        """Streams MP4 file with byte-range support for browser playback."""
+    def _stream_video_file(self, file_path: Path, as_attachment: bool = False):
+        """Streams MP4 file with byte-range support, or forces browser download as attachment."""
         file_size = file_path.stat().st_size
         range_header = self.headers.get("Range")
+
+        # Force download attachment mode
+        if as_attachment:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", f'attachment; filename="{file_path.name}"')
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.end_headers()
+            with open(file_path, "rb") as f:
+                shutil.copyfileobj(f, self.wfile)
+            return
 
         if range_header:
             # Parse 'Range: bytes=start-end'
