@@ -6,6 +6,7 @@ import sys
 import os
 import re
 import mimetypes
+import shutil
 from pathlib import Path
 from typing import Dict, Any, List
 
@@ -609,13 +610,13 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     function triggerDownload(event, clipId, videoUrl) {
-      if (event) event.preventDefault();
       let targetUrl = videoUrl;
       if (!targetUrl) {
         const vid = document.getElementById(`vid_${clipId}`);
         targetUrl = vid ? vid.getAttribute("src") : "";
       }
       if (!targetUrl) {
+        if (event) event.preventDefault();
         alert("Please render the video first before downloading.");
         return;
       }
@@ -626,18 +627,11 @@ HTML_PAGE = """<!DOCTYPE html>
       const downloadEndpoint = `${cleanUrl}?download=1`;
 
       const status = document.getElementById("statusMessage");
-      if (status) status.innerText = `📥 Downloading ${filename} to your Mac...`;
+      if (status) status.innerText = `📥 Downloading ${filename} directly to your Mac...`;
 
-      // Trigger programmatic download via invisible anchor
-      const link = document.createElement("a");
-      link.href = downloadEndpoint;
-      link.setAttribute("download", filename);
-      link.style.display = "none";
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        document.body.removeChild(link);
-      }, 300);
+      // Direct navigation to attachment endpoint triggers immediate browser file download
+      window.location.href = downloadEndpoint;
+      if (event) event.preventDefault();
     }
 
     function renderClips(clips) {
