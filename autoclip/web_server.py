@@ -26,6 +26,16 @@ PORT = 7860
 # Cache parsed transcripts in memory for fast rendering
 TRANSCRIPT_CACHE: Dict[str, List[WordTimestamp]] = {}
 
+
+def extract_video_id(url: str) -> str:
+    """Extracts YouTube 11-char video ID or generates a sanitized alphanumeric slug."""
+    m = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", url)
+    if m:
+        return m.group(1)
+    clean = re.sub(r"[^a-zA-Z0-9_-]", "_", url).strip("_")
+    return clean[-16:] if clean else "video"
+
+
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -424,7 +434,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <span>1. Source Video URL & Auto-Categorization</span>
       </div>
       <div class="url-row">
-        <input type="text" id="videoUrl" class="url-input" placeholder="Paste YouTube Video URL (e.g., https://www.youtube.com/watch?v=ofZbJdPaH3A)" value="https://www.youtube.com/watch?v=ofZbJdPaH3A" />
+        <input type="text" id="videoUrl" class="url-input" placeholder="Paste YouTube Video URL (e.g., https://www.youtube.com/watch?v=saNK6uUZRyQ)" value="https://www.youtube.com/watch?v=ofZbJdPaH3A" oninput="handleUrlInput()" onpaste="setTimeout(handleUrlInput, 50)" />
         <button class="btn-inspect" onclick="inspectVideo()">🔍 Auto-Detect Category</button>
       </div>
 
@@ -553,9 +563,33 @@ HTML_PAGE = """<!DOCTYPE html>
       inspectVideo();
     }
 
+    let currentInspectedUrl = "";
+    let urlDebounceTimer = null;
+
+    function handleUrlInput() {
+      const url = document.getElementById("videoUrl").value.trim();
+      if (!url || url === currentInspectedUrl) return;
+
+      // Clear previous clips and player immediately so user never sees old video data
+      currentClips = [];
+      const grid = document.getElementById("clipsGrid");
+      grid.innerHTML = '<div style="color: #a1a1aa; font-size: 14px; grid-column: 1 / -1; padding: 24px 0; text-align: center;">🔗 New video URL entered. Click <strong>⚡ Scan & Detect Viral Hooks</strong> to analyze new moments.</div>';
+      
+      const status = document.getElementById("statusMessage");
+      status.innerText = "New video URL entered. Auto-detecting category in a moment...";
+
+      clearTimeout(urlDebounceTimer);
+      urlDebounceTimer = setTimeout(() => {
+        if (url && (url.includes("youtube.com") || url.includes("youtu.be"))) {
+          inspectVideo();
+        }
+      }, 700);
+    }
+
     async function inspectVideo() {
       const url = document.getElementById("videoUrl").value.trim();
       if (!url) return;
+      currentInspectedUrl = url;
       const status = document.getElementById("statusMessage");
       status.innerText = "Analyzing video metadata and classifying category...";
 
@@ -591,21 +625,38 @@ HTML_PAGE = """<!DOCTYPE html>
 
     async function detectViralHooks() {
       const url = document.getElementById("videoUrl").value.trim();
+      if (!url) {
+        alert("Please enter a YouTube video URL first.");
+        return;
+      }
       const status = document.getElementById("statusMessage");
-      status.innerText = "Extracting word timestamps & scoring viral hooks...";
+      const grid = document.getElementById("clipsGrid");
+
+      // 1. Sync metadata and channel niche if URL wasn't inspected yet
+      if (url !== currentInspectedUrl) {
+        status.innerText = "Syncing video metadata for new link...";
+        await inspectVideo();
+      }
+
+      // 2. Clear previous clips and show real-time progress
+      currentClips = [];
+      grid.innerHTML = '<div style="color: #60a5fa; font-size: 14px; grid-column: 1 / -1; padding: 32px 0; text-align: center;">⚡ Extracting subtitles & calculating virality scores for this video...</div>';
+      status.innerText = `Extracting subtitles and scoring viral moments for ${selectedProfileId.toUpperCase()} channel...`;
 
       try {
-        const res = await fetch(`/api/detect?url=${encodeURIComponent(url)}&profile=${selectedProfileId}`);
+        const res = await fetch(`/api/detect?url=${encodeURIComponent(url)}&profile=${selectedProfileId}&force=1`);
         const data = await res.json();
         if (data.error) {
           status.innerText = "Error: " + data.error;
+          grid.innerHTML = `<div style="color: #ef4444; font-size: 14px; grid-column: 1 / -1; padding: 24px 0;">❌ ${data.error}</div>`;
           return;
         }
         currentClips = data.clips || [];
         renderClips(currentClips);
-        status.innerText = `Found ${currentClips.length} high-virality moments for ${selectedProfileId.toUpperCase()} channel. Click 'Render Short' to generate video!`;
+        status.innerText = `Found ${currentClips.length} high-virality moments for ${selectedProfileId.toUpperCase()} channel!`;
       } catch (err) {
         status.innerText = "Detection error: " + err.message;
+        grid.innerHTML = `<div style="color: #ef4444; font-size: 14px; grid-column: 1 / -1; padding: 24px 0;">Detection error: ${err.message}</div>`;
       }
     }
 
@@ -816,13 +867,19 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path == "/api/detect":
             url = params.get("url", [""])[0]
             profile_id = params.get("profile", ["f1"])[0]
+            force_refresh = "force" in params or params.get("refresh", ["0"])[0] == "1"
+
+            if force_refresh and url in TRANSCRIPT_CACHE:
+                del TRANSCRIPT_CACHE[url]
+
             profile = CHANNEL_PROFILES.get(profile_id, CHANNEL_PROFILES["f1"])
+            vid_id = extract_video_id(url)
 
             words = None
             extractor = MediaExtractor()
 
             # 1. Check in-memory cache
-            if url in TRANSCRIPT_CACHE:
+            if not force_refresh and url in TRANSCRIPT_CACHE:
                 words = TRANSCRIPT_CACHE[url]
             elif url.startswith("http://") or url.startswith("https://"):
                 try:
@@ -840,7 +897,7 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
                     data = json.loads(comp.read_text(encoding="utf-8"))
                     words = [WordTimestamp(w["word"], w["start"], w["end"]) for w in data]
 
-            # 3. Fallback mock if completely offline or audio-only
+            # 3. Fallback mock if completely offline
             if not words:
                 mock_words = [
                     WordTimestamp("Unbelievable", 0.0, 0.7),
@@ -858,12 +915,12 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
             detector = HookDetector(profile)
             clips = detector.detect_clips(words, max_clips=4)
 
-            # Store words in cache for render and check if clips are already generated
+            # Store words in cache for render and check if clips are already generated FOR THIS VIDEO
             response_clips = []
             for c in clips:
-                expected_file = OUTPUT_DIR / profile.niche / f"{c.id}_{profile.niche}.mp4"
+                expected_file = OUTPUT_DIR / profile.niche / f"{vid_id}_{c.id}_{profile.niche}.mp4"
                 has_rendered = expected_file.exists() and expected_file.stat().st_size > 0
-                rendered_url = f"/videos/{profile.niche}/{c.id}_{profile.niche}.mp4" if has_rendered else None
+                rendered_url = f"/videos/{profile.niche}/{expected_file.name}" if has_rendered else None
                 file_size_mb = round(expected_file.stat().st_size / (1024 * 1024), 2) if has_rendered else None
 
                 response_clips.append({
@@ -883,7 +940,7 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
                     "file_size_mb": file_size_mb
                 })
 
-            self._send_json({"profile": profile.id, "clips": response_clips})
+            self._send_json({"profile": profile.id, "video_id": vid_id, "clips": response_clips})
             return
 
         elif parsed.path.startswith("/videos/"):
@@ -938,7 +995,8 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
 
             channel_output_dir = OUTPUT_DIR / profile.niche
             channel_output_dir.mkdir(parents=True, exist_ok=True)
-            out_mp4 = channel_output_dir / f"{clip_id}_{profile.niche}.mp4"
+            vid_id = extract_video_id(url)
+            out_mp4 = channel_output_dir / f"{vid_id}_{clip_id}_{profile.niche}.mp4"
 
             try:
                 # 1. Download or resolve video file
@@ -948,7 +1006,7 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
                     video_path = Path(url)
 
                 # 2. Build .ass subtitles
-                sub_path = TEMP_DIR / f"{clip_id}_subtitles.ass"
+                sub_path = TEMP_DIR / f"{vid_id}_{clip_id}_subtitles.ass"
                 phrases = group_words_into_short_phrases(words)
                 rebased_phrases = []
                 for p in phrases:

@@ -52,28 +52,33 @@ class MediaExtractor:
         Parses exact word timestamps in milliseconds within <1 second.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
-        sub_template = str(output_dir / "captions_%(id)s.%(ext)s")
 
-        cmd = [
-            self.ytdlp_bin,
-            "--write-auto-sub",
-            "--write-sub",
-            "--sub-lang", "en",
-            "--sub-format", "json3",
-            "--skip-download",
-            "-o", sub_template,
-            url
-        ]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0:
-            return None
+        # Extract exact video ID
+        vid_match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", url)
+        video_id = vid_match.group(1) if vid_match else "unknown"
 
-        # Look for downloaded .json3 file
-        candidates = list(output_dir.glob("captions_*.json3"))
+        # Check if already downloaded for this EXACT video
+        candidates = list(output_dir.glob(f"captions_{video_id}*.json3"))
+
+        if not candidates:
+            sub_template = str(output_dir / f"captions_{video_id}.%(ext)s")
+            cmd = [
+                self.ytdlp_bin,
+                "--write-auto-sub",
+                "--write-sub",
+                "--sub-lang", "en.*,en,en-US,en-orig",
+                "--sub-format", "json3",
+                "--skip-download",
+                "-o", sub_template,
+                url
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            candidates = list(output_dir.glob(f"captions_{video_id}*.json3"))
+
         if not candidates:
             return None
 
-        caption_file = candidates[-1]
+        caption_file = candidates[0]
         try:
             data = json.loads(caption_file.read_text(encoding="utf-8"))
             words: List[WordTimestamp] = []
