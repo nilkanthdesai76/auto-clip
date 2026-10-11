@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# macOS App wrapper for AutoClip Studio
+APP_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+"$APP_DIR/launch.sh" >/dev/null 2>&1 &

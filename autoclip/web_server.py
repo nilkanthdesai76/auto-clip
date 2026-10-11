@@ -434,7 +434,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <span>1. Source Video URL & Auto-Categorization</span>
       </div>
       <div class="url-row">
-        <input type="text" id="videoUrl" class="url-input" placeholder="Paste YouTube Video URL (e.g., https://www.youtube.com/watch?v=saNK6uUZRyQ)" value="https://www.youtube.com/watch?v=ofZbJdPaH3A" oninput="handleUrlInput()" onpaste="setTimeout(handleUrlInput, 50)" />
+        <input type="text" id="videoUrl" class="url-input" placeholder="Paste YouTube Video URL (e.g., https://www.youtube.com/watch?v=...)" value="" oninput="handleUrlInput()" onpaste="setTimeout(handleUrlInput, 50)" />
         <button class="btn-inspect" onclick="inspectVideo()">🔍 Auto-Detect Category</button>
       </div>
 
@@ -809,8 +809,6 @@ HTML_PAGE = """<!DOCTYPE html>
     }
 
     renderProfiles();
-    // Auto inspect on load
-    inspectVideo();
   </script>
 </body>
 </html>
