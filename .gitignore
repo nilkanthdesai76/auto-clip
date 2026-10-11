@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# AutoClip media & cache
+temp/
+output/**/*.mp4
+output/**/*.wav
+downloads/
+.DS_Store
