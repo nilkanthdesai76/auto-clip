@@ -3,188 +3,431 @@ import socketserver
 import json
 import urllib.parse
 import sys
+import os
+import re
+import mimetypes
 from pathlib import Path
+from typing import Dict, Any, List
 
 # Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from autoclip.config import CHANNEL_PROFILES, OUTPUT_DIR, TEMP_DIR
-from autoclip.subtitle_generator import WordTimestamp
-from autoclip.hook_detector import HookDetector
+from autoclip.classifier import classify_video_metadata
+from autoclip.audio_extractor import MediaExtractor
+from autoclip.hook_detector import HookDetector, DetectedClip
+from autoclip.subtitle_generator import WordTimestamp, group_words_into_short_phrases, build_ass_subtitle_file
 from autoclip.video_engine import VideoEngine
 from autoclip.pipeline import AutoClipPipeline
 
 PORT = 7860
+
+# Cache parsed transcripts in memory for fast rendering
+TRANSCRIPT_CACHE: Dict[str, List[WordTimestamp]] = {}
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AutoClip — Multi-Channel AI YouTube Shorts Studio</title>
+  <title>AutoClip — AI Multi-Channel Shorts Studio</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg: #09090b;
-      --card-bg: #141419;
-      --border: #27272a;
+      --card-bg: #131318;
+      --card-hover: #191922;
+      --border: #24242d;
+      --border-active: #3b82f6;
       --accent: #e10600;
       --text: #f4f4f5;
-      --text-muted: #a1a1aa;
+      --text-muted: #9494a0;
+      --radius: 16px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background-color: var(--bg);
       color: var(--text);
-      font-family: 'Space Grotesk', sans-serif;
-      padding: 32px 24px;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      padding: 32px 20px;
       line-height: 1.5;
     }
-    .container { max-width: 1040px; margin: 0 auto; }
-    header { margin-bottom: 32px; border-bottom: 1px solid var(--border); padding-bottom: 24px; }
-    .badge {
-      display: inline-block;
+    .container { max-width: 1140px; margin: 0 auto; }
+    
+    header {
+      margin-bottom: 28px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .header-left .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
       font-family: 'JetBrains Mono', monospace;
       font-size: 11px;
       font-weight: 700;
-      padding: 4px 10px;
+      padding: 4px 12px;
       border-radius: 9999px;
-      background: rgba(225, 6, 0, 0.15);
+      background: rgba(225, 6, 0, 0.12);
       color: #ff4d4d;
       border: 1px solid rgba(225, 6, 0, 0.3);
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
-    h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.5px; }
-    .subtitle { color: var(--text-muted); font-size: 15px; margin-top: 6px; }
+    h1 { font-size: 32px; font-weight: 800; letter-spacing: -0.8px; }
+    .subtitle { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
 
-    /* Channel Profile Selector */
-    .section-title { font-size: 17px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
-    .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-bottom: 28px; }
-    .profile-card {
-      background: var(--card-bg);
-      border: 2px solid var(--border);
-      border-radius: 16px;
-      padding: 18px;
-      cursor: pointer;
-      transition: all 0.2s ease;
-    }
-    .profile-card:hover { border-color: rgba(255, 255, 255, 0.3); }
-    .profile-card.active { border-color: var(--card-accent, #e10600); box-shadow: 0 0 20px rgba(225, 6, 0, 0.2); }
-    .profile-icon { font-size: 28px; margin-bottom: 8px; }
-    .profile-name { font-weight: 700; font-size: 16px; }
-    .profile-handle { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
-    .profile-desc { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
-
-    /* Input Canvas */
-    .input-box {
+    /* Top Input Hub */
+    .input-panel {
       background: var(--card-bg);
       border: 1px solid var(--border);
-      border-radius: 18px;
+      border-radius: var(--radius);
       padding: 24px;
       margin-bottom: 28px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.3);
     }
-    .input-group { margin-bottom: 16px; }
-    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--text-muted); }
-    input[type="text"] {
-      width: 100%;
-      background: #09090b;
+    .url-row {
+      display: flex;
+      gap: 12px;
+      align-items: stretch;
+      margin-bottom: 16px;
+    }
+    .url-input {
+      flex: 1;
+      background: #060608;
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 14px 16px;
+      padding: 14px 18px;
       color: #fff;
       font-size: 15px;
       font-family: inherit;
       outline: none;
       transition: border-color 0.2s;
     }
-    input[type="text"]:focus { border-color: #3b82f6; }
-
-    .btn-row { display: flex; gap: 12px; margin-top: 18px; }
+    .url-input:focus { border-color: var(--border-active); }
+    
     button {
-      padding: 13px 24px;
-      border-radius: 12px;
+      cursor: pointer;
+      font-family: inherit;
       font-weight: 600;
       font-size: 14px;
-      cursor: pointer;
       border: none;
-      font-family: inherit;
+      border-radius: 12px;
       transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
     }
-    .btn-primary { background: #e10600; color: #fff; }
-    .btn-primary:hover { background: #ff1a1a; transform: translateY(-1px); }
-    .btn-secondary { background: #27272a; color: #fff; }
-    .btn-secondary:hover { background: #3f3f46; }
+    .btn-inspect {
+      padding: 0 24px;
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: #fff;
+      white-space: nowrap;
+    }
+    .btn-inspect:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    
+    .quick-samples {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .sample-pill {
+      background: rgba(255,255,255,0.06);
+      padding: 4px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      color: #e4e4e7;
+    }
+    .sample-pill:hover { background: rgba(255,255,255,0.12); }
 
-    /* Detected Clips Grid */
-    .clips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 18px; margin-top: 20px; }
+    /* Video Metadata Card with AI Auto-Detection */
+    .meta-card {
+      display: none;
+      background: #0d0d12;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      margin-top: 18px;
+      gap: 18px;
+    }
+    .meta-card.visible { display: flex; }
+    .meta-thumb {
+      width: 180px;
+      height: 101px;
+      object-fit: cover;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    .meta-info { flex: 1; }
+    .meta-title { font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .meta-channel { font-size: 13px; color: var(--text-muted); margin-bottom: 10px; }
+    .auto-detect-box {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #10b981;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .detect-reason { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+
+    /* Channel Profile Selector */
+    .section-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .profile-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+      margin-bottom: 28px;
+    }
+    .profile-card {
+      background: var(--card-bg);
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      position: relative;
+    }
+    .profile-card:hover { border-color: rgba(255, 255, 255, 0.25); }
+    .profile-card.active {
+      border-color: var(--card-accent, #e10600);
+      background: #171720;
+      box-shadow: 0 0 25px rgba(0, 0, 0, 0.5);
+    }
+    .profile-icon { font-size: 26px; margin-bottom: 8px; }
+    .profile-name { font-weight: 700; font-size: 15px; }
+    .profile-handle { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+    .profile-desc { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+    .profile-auto-tag {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      background: #10b981;
+      color: #000;
+      font-size: 10px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 9999px;
+      display: none;
+    }
+    .profile-card.auto-selected .profile-auto-tag { display: inline-block; }
+
+    /* Action Row */
+    .action-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .btn-detect {
+      padding: 14px 28px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 15px;
+      font-weight: 700;
+      box-shadow: 0 4px 15px rgba(225, 6, 0, 0.3);
+    }
+    .btn-detect:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    .status-text { font-size: 13px; color: var(--text-muted); }
+
+    /* Clips Grid */
+    .clips-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 20px;
+    }
     .clip-card {
       background: var(--card-bg);
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 18px;
-      position: relative;
+      border-radius: var(--radius);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      transition: all 0.2s ease;
     }
-    .clip-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
-    .clip-title { font-weight: 700; font-size: 16px; line-height: 1.3; }
+    .clip-card:hover { border-color: rgba(255,255,255,0.2); }
+    .clip-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
+    .clip-title { font-weight: 700; font-size: 15px; line-height: 1.3; }
     .score-badge {
       font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      font-weight: 700;
-      background: #10b981;
-      color: #000;
+      font-weight: 800;
+      font-size: 11px;
       padding: 4px 8px;
-      border-radius: 8px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.08);
+      color: #10b981;
       white-space: nowrap;
     }
-    .clip-meta { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
+    .clip-meta { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
     .clip-hook {
-      font-size: 13px;
-      color: #e4e4e7;
-      background: #09090b;
-      padding: 10px 12px;
-      border-radius: 10px;
+      background: #08080c;
       border-left: 3px solid var(--card-accent, #e10600);
-      margin-bottom: 14px;
+      padding: 10px 12px;
+      border-radius: 0 8px 8px 0;
+      font-size: 13px;
+      color: #d4d4d8;
+      margin-bottom: 18px;
+      font-style: italic;
+      line-height: 1.4;
     }
-    .status-text { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-muted); margin-top: 12px; }
+    
+    /* Video Player & Render Box */
+    .player-box {
+      margin-top: 12px;
+      border-radius: 12px;
+      overflow: hidden;
+      background: #000;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--border);
+    }
+    .player-box.visible { display: flex; }
+    video.preview-player {
+      width: 100%;
+      max-height: 480px;
+      border-radius: 8px;
+      outline: none;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+    }
+    .video-actions {
+      display: flex;
+      gap: 10px;
+      width: 100%;
+      margin-top: 12px;
+    }
+    .btn-download {
+      flex: 1;
+      padding: 10px;
+      background: #27272a;
+      color: #fff;
+      font-size: 12px;
+    }
+    .btn-download:hover { background: #3f3f46; }
+    .btn-copy {
+      padding: 10px 14px;
+      background: #18181b;
+      border: 1px solid var(--border);
+      color: #a1a1aa;
+      font-size: 12px;
+    }
+    .btn-copy:hover { color: #fff; border-color: #52525b; }
+
+    .btn-render-action {
+      margin-top: auto;
+      padding: 12px 18px;
+      background: #1d4ed8;
+      color: #fff;
+      font-weight: 700;
+      font-size: 13px;
+      border-radius: 10px;
+    }
+    .btn-render-action:hover { filter: brightness(1.15); }
+    .btn-render-action:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Progress overlay */
+    .progress-bar-container {
+      width: 100%;
+      height: 6px;
+      background: #27272a;
+      border-radius: 3px;
+      margin-top: 10px;
+      overflow: hidden;
+      display: none;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: #3b82f6;
+      transition: width 0.3s;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
-      <span class="badge">AI VIDEO CLIPPER • MULTI-CHANNEL</span>
-      <h1>AutoClip Studio</h1>
-      <p class="subtitle">Extract 30–60s viral YouTube Shorts from long-form content with niche-separated channels and animated karaoke subtitles.</p>
+      <div class="header-left">
+        <div class="badge">🎬 AutoClip AI v1.2</div>
+        <h1>Multi-Channel YouTube Shorts Studio</h1>
+        <p class="subtitle">Auto-categorization, high-speed transcript analysis, and dual-canvas 9:16 vertical render with burned karaoke subtitles.</p>
+      </div>
     </header>
 
-    <div class="section-title">
-      <span>1. Select Target Channel Niche</span>
+    <!-- 1. Video Input Hub -->
+    <div class="input-panel">
+      <div class="section-title">
+        <span>1. Source Video URL & Auto-Categorization</span>
+      </div>
+      <div class="url-row">
+        <input type="text" id="videoUrl" class="url-input" placeholder="Paste YouTube Video URL (e.g., https://www.youtube.com/watch?v=ofZbJdPaH3A)" value="https://www.youtube.com/watch?v=ofZbJdPaH3A" />
+        <button class="btn-inspect" onclick="inspectVideo()">🔍 Auto-Detect Category</button>
+      </div>
+
+      <div class="quick-samples">
+        <span>Quick Samples:</span>
+        <span class="sample-pill" onclick="loadSample('https://www.youtube.com/watch?v=ofZbJdPaH3A')">🏎️ F1 Singapore GP</span>
+        <span class="sample-pill" onclick="loadSample('https://www.youtube.com/watch?v=30v646536')">💻 Apple Silicon M4 Benchmarks</span>
+        <span class="sample-pill" onclick="loadSample('https://www.youtube.com/watch?v=400998822')">🎙️ Alex Hormozi Mindset</span>
+      </div>
+
+      <!-- Video Preview & Auto-Detection Card -->
+      <div class="meta-card" id="metaCard">
+        <img id="metaThumb" class="meta-thumb" src="" alt="Thumbnail" />
+        <div class="meta-info">
+          <div id="metaTitle" class="meta-title">Video Title</div>
+          <div id="metaChannel" class="meta-channel">Channel Name • Duration</div>
+          <div class="auto-detect-box" id="autoDetectBadge">
+            <span>🤖 AI CATEGORY: <strong id="detectedCategoryLabel">FORMULA 1</strong> (99% Match)</span>
+          </div>
+          <div class="detect-reason" id="detectReasonText">Matched F1 keywords across channel and tags.</div>
+        </div>
+      </div>
     </div>
 
+    <!-- 2. Channel Profiles -->
+    <div class="section-title">
+      <span>2. Target YouTube Channel Branding</span>
+      <span style="font-size: 12px; color: var(--text-muted); font-weight: normal;">(Auto-switches to detected category, or manually override)</span>
+    </div>
     <div class="profile-grid" id="profileGrid"></div>
 
-    <div class="input-box">
-      <div class="section-title">
-        <span>2. Video Input Source</span>
-      </div>
-      <div class="input-group">
-        <label>YouTube URL or Local File Path</label>
-        <input type="text" id="videoUrl" placeholder="https://www.youtube.com/watch?v=... or /Users/.../interview.mp4" value="https://www.youtube.com/watch?v=sample">
-      </div>
-
-      <div class="btn-row">
-        <button class="btn-primary" id="btnDetect" onclick="detectHooks()">⚡ Scan & Detect Viral Hooks</button>
-        <button class="btn-secondary" id="btnTestRender" onclick="testPipelineRender()">🧪 Run Test Render</button>
-      </div>
-      <div class="status-text" id="statusMessage">Ready. Select a channel profile and click scan.</div>
+    <!-- Action & Status -->
+    <div class="action-row">
+      <button class="btn-detect" id="btnDetect" onclick="detectViralHooks()">⚡ Scan & Detect Viral Hooks</button>
+      <div class="status-text" id="statusMessage">Paste a URL above and click Auto-Detect or Scan.</div>
     </div>
 
+    <!-- 3. Candidate Shorts -->
     <div class="section-title">
-      <span>3. Detected Candidate Shorts</span>
+      <span>3. Candidate Viral Shorts & Video Playback</span>
     </div>
     <div class="clips-grid" id="clipsGrid">
-      <div style="color: #71717a; font-size: 14px; grid-column: 1 / -1;">No clips analyzed yet. Click 'Scan & Detect Viral Hooks' or 'Run Test Render' above.</div>
+      <div style="color: #71717a; font-size: 14px; grid-column: 1 / -1; padding: 20px 0;">
+        No clips scanned yet. Click 'Scan & Detect Viral Hooks' to discover the best 30–60s moments.
+      </div>
     </div>
   </div>
 
@@ -197,11 +440,16 @@ HTML_PAGE = """<!DOCTYPE html>
     ];
 
     let selectedProfileId = "f1";
+    let autoDetectedId = null;
+    let currentClips = [];
 
     function renderProfiles() {
       const container = document.getElementById("profileGrid");
       container.innerHTML = PROFILES.map(p => `
-        <div class="profile-card ${p.id === selectedProfileId ? 'active' : ''}" style="--card-accent: ${p.color}" onclick="selectProfile('${p.id}')">
+        <div class="profile-card ${p.id === selectedProfileId ? 'active' : ''} ${p.id === autoDetectedId ? 'auto-selected' : ''}" 
+             style="--card-accent: ${p.color}" 
+             onclick="selectProfile('${p.id}')">
+          <span class="profile-auto-tag">AUTO DETECTED</span>
           <div class="profile-icon">${p.icon}</div>
           <div class="profile-name" style="color: ${p.id === selectedProfileId ? p.color : '#fff'}">${p.name}</div>
           <div class="profile-handle">${p.handle}</div>
@@ -218,34 +466,64 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById("statusMessage").innerText = `Active channel set to: ${activeProf.name} (${activeProf.handle})`;
     }
 
-    async function detectHooks() {
+    function loadSample(url) {
+      document.getElementById("videoUrl").value = url;
+      inspectVideo();
+    }
+
+    async function inspectVideo() {
+      const url = document.getElementById("videoUrl").value.trim();
+      if (!url) return;
       const status = document.getElementById("statusMessage");
-      const url = document.getElementById("videoUrl").value;
-      status.innerText = "Analyzing transcript & detecting high-retention hooks...";
+      status.innerText = "Analyzing video metadata and classifying category...";
 
       try {
-        const res = await fetch(`/api/detect?profile=${selectedProfileId}&url=${encodeURIComponent(url)}`);
+        const res = await fetch(`/api/inspect?url=${encodeURIComponent(url)}`);
         const data = await res.json();
-        renderClips(data.clips || []);
-        status.innerText = `Detected ${data.clips ? data.clips.length : 0} candidate shorts for ${selectedProfileId.toUpperCase()} channel.`;
+        if (data.error) {
+          status.innerText = "Error: " + data.error;
+          return;
+        }
+
+        // Show metadata card
+        const card = document.getElementById("metaCard");
+        card.classList.add("visible");
+        document.getElementById("metaTitle").innerText = data.metadata.title;
+        document.getElementById("metaChannel").innerText = `${data.metadata.channel} • ${Math.round(data.metadata.duration / 60)} min • ${(data.metadata.view_count || 0).toLocaleString()} views`;
+        if (data.metadata.thumbnail) {
+          document.getElementById("metaThumb").src = data.metadata.thumbnail;
+        }
+
+        // Set auto detection
+        autoDetectedId = data.detected_niche;
+        document.getElementById("detectedCategoryLabel").innerText = data.detected_niche.toUpperCase();
+        document.getElementById("detectReasonText").innerText = data.reasoning;
+        
+        // Auto select channel profile
+        selectProfile(data.detected_niche);
+        status.innerText = `Auto-detected as ${data.detected_niche.toUpperCase()} (${data.confidence}% confidence). Ready to scan hooks!`;
       } catch (err) {
-        status.innerText = "Error scanning clips: " + err.message;
+        status.innerText = "Inspection error: " + err.message;
       }
     }
 
-    async function testPipelineRender() {
+    async function detectViralHooks() {
+      const url = document.getElementById("videoUrl").value.trim();
       const status = document.getElementById("statusMessage");
-      status.innerText = "Executing synthetic video test render with burned animated subtitles...";
+      status.innerText = "Extracting word timestamps & scoring viral hooks...";
 
       try {
-        const res = await fetch(`/api/test-render?profile=${selectedProfileId}`);
+        const res = await fetch(`/api/detect?url=${encodeURIComponent(url)}&profile=${selectedProfileId}`);
         const data = await res.json();
-        status.innerText = data.message || "Test completed!";
-        if (data.clip) {
-          renderClips([data.clip]);
+        if (data.error) {
+          status.innerText = "Error: " + data.error;
+          return;
         }
+        currentClips = data.clips || [];
+        renderClips(currentClips);
+        status.innerText = `Found ${currentClips.length} high-virality moments for ${selectedProfileId.toUpperCase()} channel. Click 'Render Short' to generate video!`;
       } catch (err) {
-        status.innerText = "Test render error: " + err.message;
+        status.innerText = "Detection error: " + err.message;
       }
     }
 
@@ -255,24 +533,105 @@ HTML_PAGE = """<!DOCTYPE html>
         grid.innerHTML = '<div style="color: #71717a; font-size: 14px;">No clips available.</div>';
         return;
       }
-      grid.innerHTML = clips.map(c => `
-        <div class="clip-card" style="--card-accent: ${c.color || '#e10600'}">
+
+      grid.innerHTML = clips.map((c, idx) => `
+        <div class="clip-card" id="card_${c.id}" style="--card-accent: ${c.color || '#e10600'}">
           <div class="clip-header">
             <div class="clip-title">${c.title}</div>
-            <div class="score-badge">${c.virality_score}/100</div>
+            <div class="score-badge">🔥 ${c.virality_score}/100</div>
           </div>
           <div class="clip-meta">⏱️ ${c.formatted_time_range || c.duration + 's'} • ${c.hashtags ? c.hashtags.slice(0, 3).join(' ') : '#Shorts'}</div>
           <div class="clip-hook"><strong>Hook:</strong> "${c.hook}"</div>
-          <button class="btn-primary" style="width: 100%; padding: 10px; font-size: 13px;" onclick="renderShort('${c.id}')">🎬 Render 9:16 Short (.mp4)</button>
+
+          <!-- Video Player Box (shown once rendered) -->
+          <div class="player-box" id="player_${c.id}">
+            <video class="preview-player" id="vid_${c.id}" controls playsinline></video>
+            <div class="video-actions">
+              <a id="download_${c.id}" class="btn-download" download>⬇️ Download MP4</a>
+              <button class="btn-copy" onclick="copyMeta('${c.id}')">📋 Copy Meta</button>
+            </div>
+          </div>
+
+          <div class="progress-bar-container" id="prog_${c.id}">
+            <div class="progress-bar-fill" id="fill_${c.id}"></div>
+          </div>
+
+          <button class="btn-render-action" id="btn_render_${c.id}" onclick="renderClip('${c.id}', ${idx})">
+            🎬 Render 9:16 Short (Video + Audio)
+          </button>
         </div>
       `).join("");
     }
 
-    function renderShort(clipId) {
-      alert(`Queued render for ${clipId}. Video will be exported to output/${selectedProfileId}/ with burned karaoke subtitles!`);
+    async function renderClip(clipId, clipIdx) {
+      const clip = currentClips[clipIdx];
+      const btn = document.getElementById(`btn_render_${clipId}`);
+      const prog = document.getElementById(`prog_${clipId}`);
+      const fill = document.getElementById(`fill_${clipId}`);
+      const status = document.getElementById("statusMessage");
+
+      btn.disabled = true;
+      btn.innerText = "⏳ Rendering 9:16 Short (FFmpeg + Audio)...";
+      prog.style.display = "block";
+      fill.style.width = "40%";
+      status.innerText = `Rendering ${clip.title} with burned karaoke subtitles and full audio...`;
+
+      try {
+        const url = document.getElementById("videoUrl").value.trim();
+        const res = await fetch("/api/render-clip", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: url,
+            profile: selectedProfileId,
+            clip_id: clip.id,
+            start_seconds: clip.start_seconds,
+            duration: clip.duration,
+            words: clip.words || []
+          })
+        });
+
+        const data = await res.json();
+        fill.style.width = "100%";
+
+        if (data.status === "success") {
+          btn.innerText = "✅ Rendered Successfully";
+          btn.style.background = "#10b981";
+          
+          // Display Video Player
+          const playerBox = document.getElementById(`player_${clipId}`);
+          const vid = document.getElementById(`vid_${clipId}`);
+          const dl = document.getElementById(`download_${clipId}`);
+
+          playerBox.classList.add("visible");
+          vid.src = data.video_url;
+          vid.load();
+          dl.href = data.video_url;
+
+          status.innerText = `Render complete! Play the video above or download the MP4.`;
+        } else {
+          btn.innerText = "❌ Render Failed";
+          btn.disabled = false;
+          status.innerText = "Render error: " + (data.error || "Unknown error");
+        }
+      } catch (err) {
+        btn.innerText = "❌ Render Error";
+        btn.disabled = false;
+        status.innerText = "Render request failed: " + err.message;
+      }
+    }
+
+    function copyMeta(clipId) {
+      const clip = currentClips.find(c => c.id === clipId);
+      if (!clip) return;
+      const text = `${clip.title}\\n\\n${clip.hook}\\n\\nSubscribe to ${clip.handle || '@AutoClip'}!\\n\\n${(clip.hashtags || []).join(' ')}`;
+      navigator.clipboard.writeText(text);
+      alert("Copied YouTube Shorts title and description to clipboard!");
     }
 
     renderProfiles();
+    // Auto inspect on load
+    inspectVideo();
   </script>
 </body>
 </html>
@@ -280,6 +639,21 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
 class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
+
+    def end_headers(self):
+        # Enable CORS and Range headers
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Range")
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def do_HEAD(self):
+        self.do_GET()
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
@@ -291,101 +665,226 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(HTML_PAGE.encode("utf-8"))
             return
 
-        elif parsed.path == "/api/detect":
-            profile_id = params.get("profile", ["f1"])[0]
-            profile = CHANNEL_PROFILES.get(profile_id, CHANNEL_PROFILES["f1"])
+        elif parsed.path == "/api/inspect":
+            url = params.get("url", [""])[0]
+            if not url:
+                self._send_json({"error": "No URL provided"}, status=400)
+                return
 
-            # Sample synthetic transcript demonstrator
-            mock_words = [
-                WordTimestamp(word="Why", start=0.0, end=0.3),
-                WordTimestamp(word="did", start=0.32, end=0.5),
-                WordTimestamp(word="Ferrari", start=0.52, end=0.9),
-                WordTimestamp(word="make", start=0.92, end=1.1),
-                WordTimestamp(word="this", start=1.12, end=1.3),
-                WordTimestamp(word="controversial", start=1.32, end=1.9),
-                WordTimestamp(word="pit", start=1.92, end=2.2),
-                WordTimestamp(word="call", start=2.22, end=2.5),
-                WordTimestamp(word="in", start=2.52, end=2.7),
-                WordTimestamp(word="Monza?", start=2.72, end=3.3),
-                WordTimestamp(word="Hamilton", start=3.5, end=4.0),
-                WordTimestamp(word="was", start=4.02, end=4.2),
-                WordTimestamp(word="flying", start=4.22, end=4.7),
-                WordTimestamp(word="on", start=4.72, end=4.9),
-                WordTimestamp(word="the", start=4.92, end=5.1),
-                WordTimestamp(word="hards.", start=5.12, end=5.7),
-                WordTimestamp(word="The", start=5.9, end=6.1),
-                WordTimestamp(word="data", start=6.12, end=6.5),
-                WordTimestamp(word="showed", start=6.52, end=6.9),
-                WordTimestamp(word="a", start=6.92, end=7.0),
-                WordTimestamp(word="0.4s", start=7.02, end=7.6),
-                WordTimestamp(word="pace", start=7.62, end=8.0),
-                WordTimestamp(word="advantage", start=8.02, end=8.6),
-                WordTimestamp(word="per", start=8.62, end=8.8),
-                WordTimestamp(word="lap.", start=8.82, end=9.3),
-                WordTimestamp(word="Listen", start=9.5, end=9.9),
-                WordTimestamp(word="to", start=9.92, end=10.1),
-                WordTimestamp(word="this", start=10.12, end=10.3),
-                WordTimestamp(word="radio", start=10.32, end=10.7),
-                WordTimestamp(word="exchange.", start=10.72, end=11.3)
-            ]
-
-            detector = HookDetector(profile)
-            clips = detector.detect_clips(mock_words, max_clips=3)
-
-            response_payload = {
-                "profile": profile.id,
-                "clips": [
-                    {
-                        "id": c.id,
-                        "title": c.title,
-                        "hook": c.hook,
-                        "start_seconds": c.start_seconds,
-                        "end_seconds": c.end_seconds,
-                        "duration": round(c.duration, 1),
-                        "virality_score": c.virality_score,
-                        "hashtags": c.hashtags,
-                        "color": profile.highlight_color,
-                        "formatted_time_range": c.formatted_time_range
-                    }
-                    for c in clips
-                ]
-            }
-
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(response_payload).encode("utf-8"))
+            pipeline = AutoClipPipeline()
+            try:
+                res = pipeline.inspect_and_classify(url)
+                self._send_json({
+                    "metadata": res["metadata"],
+                    "detected_niche": res["detected_niche"],
+                    "confidence": res["confidence"],
+                    "reasoning": res["reasoning"],
+                    "profile_id": res["profile"].id
+                })
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=500)
             return
 
-        elif parsed.path == "/api/test-render":
+        elif parsed.path == "/api/detect":
+            url = params.get("url", [""])[0]
             profile_id = params.get("profile", ["f1"])[0]
             profile = CHANNEL_PROFILES.get(profile_id, CHANNEL_PROFILES["f1"])
 
-            response_payload = {
-                "status": "success",
-                "message": f"Verified FFmpeg 9.0.2 & pipeline engine for {profile.name}!",
-                "clip": {
-                    "id": "clip_demo_1",
-                    "title": f"Shocking {profile.niche.upper()} Revelation",
-                    "hook": "Nobody expected this outcome...",
-                    "duration": 34.5,
-                    "virality_score": 96,
-                    "hashtags": profile.target_hashtags,
-                    "color": profile.highlight_color,
-                    "formatted_time_range": "00:14 -> 00:48 (34s)"
-                }
-            }
+            words = None
+            extractor = MediaExtractor()
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(response_payload).encode("utf-8"))
+            # 1. Check in-memory cache
+            if url in TRANSCRIPT_CACHE:
+                words = TRANSCRIPT_CACHE[url]
+            elif url.startswith("http://") or url.startswith("https://"):
+                try:
+                    words = extractor.fetch_youtube_captions(url, TEMP_DIR)
+                    if words:
+                        TRANSCRIPT_CACHE[url] = words
+                except Exception as e:
+                    print(f"[Server] Caption fetch error: {e}")
+
+            # 2. Check local companion words.json
+            if not words and not url.startswith("http"):
+                local_path = Path(url)
+                comp = local_path.with_suffix(".words.json")
+                if comp.exists():
+                    data = json.loads(comp.read_text(encoding="utf-8"))
+                    words = [WordTimestamp(w["word"], w["start"], w["end"]) for w in data]
+
+            # 3. Fallback mock if completely offline or audio-only
+            if not words:
+                mock_words = [
+                    WordTimestamp("Unbelievable", 0.0, 0.7),
+                    WordTimestamp("action", 0.7, 1.2),
+                    WordTimestamp("and", 1.2, 1.4),
+                    WordTimestamp("drama", 1.4, 1.9),
+                    WordTimestamp("in", 1.9, 2.1),
+                    WordTimestamp("today's", 2.1, 2.6),
+                    WordTimestamp("session!", 2.6, 3.4),
+                ]
+                for i in range(4, 30):
+                    mock_words.append(WordTimestamp(f"segment{i}", float(i), float(i) + 0.8))
+                words = mock_words
+
+            detector = HookDetector(profile)
+            clips = detector.detect_clips(words, max_clips=4)
+
+            # Store words in cache for render
+            response_clips = []
+            for c in clips:
+                response_clips.append({
+                    "id": c.id,
+                    "title": c.title,
+                    "hook": c.hook,
+                    "start_seconds": c.start_seconds,
+                    "end_seconds": c.end_seconds,
+                    "duration": round(c.duration, 1),
+                    "virality_score": c.virality_score,
+                    "hashtags": c.hashtags,
+                    "color": profile.highlight_color,
+                    "formatted_time_range": c.formatted_time_range,
+                    "handle": profile.handle,
+                    "words": [{"word": w.word, "start": w.start, "end": w.end} for w in c.words]
+                })
+
+            self._send_json({"profile": profile.id, "clips": response_clips})
+            return
+
+        elif parsed.path.startswith("/videos/"):
+            # Serve rendered MP4 files from output directory
+            rel_path = parsed.path.replace("/videos/", "")
+            file_path = OUTPUT_DIR / rel_path
+            if file_path.exists() and file_path.is_file():
+                self._stream_video_file(file_path)
+            else:
+                self.send_error(404, "Video file not found")
             return
 
         super().do_GET()
 
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/render-clip":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode("utf-8"))
+            except Exception:
+                self._send_json({"error": "Invalid JSON body"}, status=400)
+                return
+
+            url = data.get("url", "")
+            profile_id = data.get("profile", "f1")
+            clip_id = data.get("clip_id", "clip_1")
+            start_seconds = float(data.get("start_seconds", 0.0))
+            duration = float(data.get("duration", 25.0))
+            raw_words = data.get("words", [])
+
+            words = [WordTimestamp(w["word"], w["start"], w["end"]) for w in raw_words]
+
+            profile = CHANNEL_PROFILES.get(profile_id, CHANNEL_PROFILES["f1"])
+            extractor = MediaExtractor()
+            video_engine = VideoEngine()
+
+            channel_output_dir = OUTPUT_DIR / profile.niche
+            channel_output_dir.mkdir(parents=True, exist_ok=True)
+            out_mp4 = channel_output_dir / f"{clip_id}_{profile.niche}.mp4"
+
+            try:
+                # 1. Download or resolve video file
+                if url.startswith("http://") or url.startswith("https://"):
+                    video_path = extractor.download_youtube_video(url, TEMP_DIR / "downloads")
+                else:
+                    video_path = Path(url)
+
+                # 2. Build .ass subtitles
+                sub_path = TEMP_DIR / f"{clip_id}_subtitles.ass"
+                phrases = group_words_into_short_phrases(words)
+                rebased_phrases = []
+                for p in phrases:
+                    rebased_words = [
+                        WordTimestamp(w.word, max(0.0, w.start - start_seconds), max(0.0, w.end - start_seconds))
+                        for w in p.words
+                    ]
+                    rebased_phrases.append(
+                        p.__class__(
+                            words=rebased_words,
+                            start=max(0.0, p.start - start_seconds),
+                            end=max(0.0, p.end - start_seconds)
+                        )
+                    )
+
+                build_ass_subtitle_file(rebased_phrases, sub_path, profile)
+
+                # 3. Render 9:16 vertical short
+                rendered_path = video_engine.render_short(
+                    input_video_path=video_path,
+                    start_seconds=start_seconds,
+                    duration=duration,
+                    subtitle_ass_path=sub_path,
+                    output_mp4_path=out_mp4,
+                    profile=profile
+                )
+
+                # Return accessible URL
+                video_url = f"/videos/{profile.niche}/{out_mp4.name}"
+                self._send_json({
+                    "status": "success",
+                    "video_url": video_url,
+                    "output_path": str(rendered_path),
+                    "file_size_mb": round(rendered_path.stat().st_size / (1024 * 1024), 2)
+                })
+            except Exception as e:
+                print(f"[Server] Render error: {e}")
+                self._send_json({"error": str(e)}, status=500)
+            return
+
+        self.send_error(404, "Endpoint not found")
+
+    def _stream_video_file(self, file_path: Path):
+        """Streams MP4 file with byte-range support for browser playback."""
+        file_size = file_path.stat().st_size
+        range_header = self.headers.get("Range")
+
+        if range_header:
+            # Parse 'Range: bytes=start-end'
+            range_match = re.search(r"bytes=(\d+)-(\d*)", range_header)
+            if range_match:
+                start = int(range_match.group(1))
+                end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
+                length = end - start + 1
+
+                self.send_response(206)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                self.send_header("Content-Length", str(length))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+
+                with open(file_path, "rb") as f:
+                    f.seek(start)
+                    self.wfile.write(f.read(length))
+                return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(file_size))
+        self.send_header("Accept-Ranges", "bytes")
+        self.end_headers()
+        with open(file_path, "rb") as f:
+            shutil.copyfileobj(f, self.wfile)
+
+    def _send_json(self, data: Any, status: int = 200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode("utf-8"))
+
 
 def run_server(port: int = PORT):
+    # Enable address reuse so server restarts cleanly
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", port), AutoClipServerHandler) as httpd:
         print(f"[AutoClip Studio] Running at http://localhost:{port}")
         httpd.serve_forever()
