@@ -11,8 +11,11 @@ mkdir -p temp
 if lsof -i :7860 -sTCP:LISTEN -t >/dev/null 2>&1; then
   echo "⚡ AutoClip Studio is already running on http://localhost:7860"
 else
-  echo "🚀 Starting AutoClip Studio server on http://localhost:7860..."
-  nohup python3 autoclip/web_server.py > temp/server.log 2>&1 &
+  PYTHON_BIN="python3"
+  if [ -x ".venv/bin/python3" ]; then
+    PYTHON_BIN=".venv/bin/python3"
+  fi
+  nohup "$PYTHON_BIN" autoclip/web_server.py > temp/server.log 2>&1 &
   SERVER_PID=$!
   echo $SERVER_PID > temp/server.pid
 

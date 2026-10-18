@@ -32,14 +32,20 @@ flowchart LR
 1. **Word-Level Subtitle Engine**:
    - Generates `.ass` karaoke subtitle streams.
    - Bounces active spoken words in channel-specific neon highlight colors.
-   - Safe-zone positioned at vertical 70% above YouTube Shorts controls.
-2. **Smart 9:16 Vertical Compositor**:
-   - Industry-standard blurred stacked backdrop (1080×1920) with sharp centered foreground.
+   - Safe-zone positioned at vertical 70% above YouTube Shorts and Reels controls.
+2. **Smart 9:16 Vertical Compositor & Hardware Acceleration**:
+   - Industry-standard blurred stacked backdrop (1080×1920) or edge-to-edge crop.
+   - **Hardware Encoder Auto-Detection** (adapted from ViralCutter): Apple Silicon VideoToolbox (`h264_videotoolbox`), NVIDIA NVENC, AMD AMF, Intel QSV, with CPU `libx264` fallback.
    - 60 FPS fast-start MP4 encoding.
-3. **Automated YouTube Metadata Generator**:
-   - Auto-generates click-worthy titles, descriptions, and niche hashtags ready for one-click publishing.
-4. **Interactive Web Studio**:
+3. **The ViralCutter Standard Virality Engine**:
+   - **No Garbage Starts**: Rejects filler words ("Um", "Uh", "So...") and low-energy greetings.
+   - **Standalone Test**: Enforces complete context and narrative arc (Hook, Story, Conclusion).
+   - **No Mid-Sentence Cuts**: Aligns clip endpoints with complete punctuation boundaries.
+4. **Clean Metadata Generator**:
+   - Auto-generates click-worthy titles, clean hook-focused descriptions (free of annoying follow/subscribe spam), and niche hashtags.
+5. **Interactive Web Studio**:
    - Local web dashboard running at `http://localhost:7860`.
+   - Browser cookie fallback for reliable YouTube video downloads.
 
 ---
 

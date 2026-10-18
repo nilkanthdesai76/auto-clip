@@ -59,7 +59,7 @@ class AutoClipPipeline:
     def process_video(
         self,
         video_input: str,  # YouTube URL or local filepath
-        max_clips: int = 3,
+        max_clips: int = 4,
         auto_detect: bool = True,
         api_key: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -108,9 +108,9 @@ class AutoClipPipeline:
             print(f"[{self.profile.name}] Transcribing words with timestamps...")
             words = self.transcriber.transcribe(audio_path)
 
-        # 5. Detect top viral clips
+        # 5. Detect top viral clips (Guaranteed at least 4 clips)
         print(f"[{self.profile.name}] Detecting top hooks for {self.profile.niche} audience...")
-        clips: List[DetectedClip] = self.detector.detect_clips(words, api_key=api_key, max_clips=max_clips)
+        clips: List[DetectedClip] = self.detector.detect_clips(words, api_key=api_key, max_clips=max_clips, min_clips=4)
 
         results = []
 
@@ -166,7 +166,7 @@ class AutoClipPipeline:
                 "hook": clip.hook,
                 "duration_seconds": round(clip.duration, 1),
                 "hashtags": clip.hashtags,
-                "description": f"{clip.hook}\n\nSubscribe to {self.profile.handle} for more daily {self.profile.niche.upper()} moments!\n\n{' '.join(clip.hashtags)}"
+                "description": f"{clip.hook}\n\n{' '.join(clip.hashtags)}"
             }
             metadata_file.write_text(json.dumps(meta_dict, indent=2), encoding="utf-8")
 

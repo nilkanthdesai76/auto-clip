@@ -41,10 +41,10 @@ CHANNEL_PROFILES: Dict[str, ChannelProfile] = {
         max_clip_duration=58,
         target_hashtags=["#F1", "#Formula1", "#Shorts", "#Racing", "#Motorsport"],
         system_prompt=(
-            "You are an expert Formula 1 social media editor. Analyze this race/interview transcript. "
-            "Identify moments with intense radio drama, fiery debates, technical car insights, "
-            "controversial stewarding decisions, or humorous driver banter. "
-            "Prioritize moments with a 3-second hook that immediately grips racing fans."
+            "You are an expert Formula 1 social media editor following the ViralCutter Standard. Analyze this transcript. "
+            "Identify moments with intense radio drama, fiery debates, technical car insights, or controversies. "
+            "STRICT RULES: No garbage starts (no filler words like 'Um' or 'So...'). Must pass the Standalone Test "
+            "(100% understandable to a stranger). First 3 seconds MUST be an irresistible hook. NEVER cut mid-sentence."
         )
     ),
     "tech": ChannelProfile(
@@ -64,9 +64,10 @@ CHANNEL_PROFILES: Dict[str, ChannelProfile] = {
         max_clip_duration=55,
         target_hashtags=["#Tech", "#AppleSilicon", "#Coding", "#Software", "#Shorts", "#Developer"],
         system_prompt=(
-            "You are a top tech YouTube Shorts strategist. Analyze this transcript for shocking hardware benchmarks, "
-            "architectural breakthroughs, surprising developer truths, and contrarian software engineering takes. "
-            "The hook must challenge conventional wisdom in the first 3 seconds."
+            "You are a top tech YouTube Shorts strategist following the ViralCutter Standard. Analyze this transcript for shocking benchmarks, "
+            "architectural breakthroughs, and contrarian software engineering takes. "
+            "STRICT RULES: No filler starters ('Um', 'So', 'Like'). Must pass Standalone Test. "
+            "The hook must challenge conventional wisdom in the first 3 seconds with a complete narrative arc."
         )
     ),
     "podcast": ChannelProfile(
@@ -86,9 +87,10 @@ CHANNEL_PROFILES: Dict[str, ChannelProfile] = {
         max_clip_duration=58,
         target_hashtags=["#Podcasts", "#Success", "#Mindset", "#Business", "#Shorts", "#Discipline"],
         system_prompt=(
-            "You are an elite short-form editor for top business & philosophy podcasts. "
-            "Extract self-contained, emotionally resonant insights where a speaker reveals a hard truth, "
-            "practical life strategy, or unforgettable story. The first sentence must be an irresistible hook."
+            "You are an elite short-form editor for top podcasts following the ViralCutter Standard. "
+            "Extract self-contained insights where a speaker reveals a hard truth, strategy, or unforgettable story. "
+            "STRICT RULES: No garbage starts. Segment must stand alone with complete beginning, middle, and punchline. "
+            "The first sentence must be an irresistible hook."
         )
     ),
     "gaming": ChannelProfile(
@@ -108,8 +110,8 @@ CHANNEL_PROFILES: Dict[str, ChannelProfile] = {
         max_clip_duration=45,
         target_hashtags=["#Gaming", "#Clutch", "#Gamer", "#Shorts", "#RetroGaming", "#FunnyMoments"],
         system_prompt=(
-            "You are a viral gaming clip editor. Look for sudden plot twists, hilarious reactions, "
-            "unbelievable clutch saves, or nostalgic gaming trivia. Prioritize punchy, fast-paced moments."
+            "You are a viral gaming clip editor following the ViralCutter Standard. Look for sudden plot twists, hilarious reactions, "
+            "or unbelievable clutch saves. STRICT RULES: No slow intros. Standalone context only. Fast-paced hook in 0-3s."
         )
     )
 }

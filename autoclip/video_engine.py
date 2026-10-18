@@ -22,9 +22,44 @@ class VideoEngine:
             self.ffmpeg_bin = "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg"
         else:
             self.ffmpeg_bin = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+        self._cached_encoder = None
 
     def is_available(self) -> bool:
         return shutil.which(self.ffmpeg_bin) is not None or Path(self.ffmpeg_bin).exists()
+
+    def get_best_encoder(self) -> tuple:
+        """
+        Detects fastest hardware encoder available (adapted from ViralCutter):
+        Priority: Apple Silicon/macOS VideoToolbox > NVIDIA NVENC > AMD AMF > Intel QSV > CPU libx264
+        """
+        if self._cached_encoder:
+            return self._cached_encoder
+
+        try:
+            res = subprocess.run([self.ffmpeg_bin, "-hide_banner", "-encoders"], capture_output=True, text=True)
+            output = res.stdout
+            if "h264_videotoolbox" in output:
+                print("[VideoEngine] Hardware acceleration detected: macOS VideoToolbox (h264_videotoolbox)")
+                self._cached_encoder = ("h264_videotoolbox", ["-c:v", "h264_videotoolbox", "-b:v", "8M", "-pix_fmt", "yuv420p"])
+                return self._cached_encoder
+            if "h264_nvenc" in output:
+                print("[VideoEngine] Hardware acceleration detected: NVIDIA NVENC (h264_nvenc)")
+                self._cached_encoder = ("h264_nvenc", ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "22", "-pix_fmt", "yuv420p"])
+                return self._cached_encoder
+            if "h264_amf" in output:
+                print("[VideoEngine] Hardware acceleration detected: AMD AMF (h264_amf)")
+                self._cached_encoder = ("h264_amf", ["-c:v", "h264_amf", "-quality", "speed", "-pix_fmt", "yuv420p"])
+                return self._cached_encoder
+            if "h264_qsv" in output:
+                print("[VideoEngine] Hardware acceleration detected: Intel QSV (h264_qsv)")
+                self._cached_encoder = ("h264_qsv", ["-c:v", "h264_qsv", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
+                return self._cached_encoder
+        except Exception as e:
+            print(f"[VideoEngine] Error checking hardware encoders: {e}")
+
+        print("[VideoEngine] Using CPU encoder: libx264")
+        self._cached_encoder = ("libx264", ["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p"])
+        return self._cached_encoder
 
     def render_short(
         self,
@@ -72,33 +107,85 @@ class VideoEngine:
                 f"[comp]subtitles='{escaped_sub_path}'[v]"
             )
 
-        cmd = [
-            self.ffmpeg_bin,
-            "-y",                          # Overwrite output without asking
-            "-ss", f"{start_seconds:.3f}", # Fast seek
-            "-t", f"{duration:.3f}",       # Duration
-            "-i", str(input_video_path),
-            "-filter_complex", filter_complex,
-            "-map", "[v]",
-            "-map", "0:a:0?",              # Map first audio stream
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "20",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-ar", "48000",
-            "-movflags", "+faststart",     # Optimizes for YouTube stream start
-            str(output_mp4_path)
-        ]
+        if not input_video_path.exists():
+            raise FileNotFoundError(f"Source video file not found: {input_video_path}")
 
-        print(f"[VideoEngine] Executing ({layout_mode}): {' '.join(cmd[:10])} ... -> {output_mp4_path.name}")
-        process = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        # Quick validation of input video
+        ffprobe_bin = shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
+        try:
+            probe_cmd = [
+                ffprobe_bin, "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "csv=p=0",
+                str(input_video_path)
+            ]
+            probe_res = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+            if probe_res.returncode != 0 or not probe_res.stdout.strip():
+                raise RuntimeError(f"Input video file '{input_video_path.name}' contains no readable video streams or is corrupted.")
+        except subprocess.TimeoutExpired:
+            pass
+
+        encoder_name, encoder_flags = self.get_best_encoder()
+
+        def build_cmd(enc_flags, fast_seek=True):
+            if fast_seek:
+                return [
+                    self.ffmpeg_bin,
+                    "-y",                          # Overwrite output without asking
+                    "-ss", f"{start_seconds:.3f}", # Fast seek
+                    "-t", f"{duration:.3f}",       # Duration
+                    "-i", str(input_video_path),
+                    "-filter_complex", filter_complex,
+                    "-map", "[v]",
+                    "-map", "0:a:0?",              # Map first audio stream if present
+                    *enc_flags,
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-ar", "48000",
+                    "-movflags", "+faststart",     # Optimizes for YouTube stream start
+                    str(output_mp4_path)
+                ]
+            else:
+                return [
+                    self.ffmpeg_bin,
+                    "-y",
+                    "-i", str(input_video_path),
+                    "-ss", f"{start_seconds:.3f}", # Accurate seek after demux
+                    "-t", f"{duration:.3f}",
+                    "-filter_complex", filter_complex,
+                    "-map", "[v]",
+                    "-map", "0:a:0?",
+                    *enc_flags,
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    "-ar", "48000",
+                    "-movflags", "+faststart",
+                    str(output_mp4_path)
+                ]
+
+        # Attempt 1: Fast seek with best encoder
+        cmd = build_cmd(encoder_flags, fast_seek=True)
+        print(f"[VideoEngine] Executing ({layout_mode}, {encoder_name}, fast_seek): {' '.join(cmd[:12])} ... -> {output_mp4_path.name}")
+        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        # Attempt 2: If seek failed or stream mismatch, fallback to decode seek
+        if process.returncode != 0 and ("could not seek" in process.stderr or "matches no streams" in process.stderr):
+            print(f"[VideoEngine] Fast seek failed. Falling back to accurate decode seek...")
+            cmd_seek = build_cmd(encoder_flags, fast_seek=False)
+            process = subprocess.run(cmd_seek, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        # Attempt 3: If hardware encoder failed, fallback to CPU libx264
+        if process.returncode != 0 and encoder_name != "libx264":
+            print(f"[VideoEngine] Hardware encoder {encoder_name} failed. Falling back to CPU libx264...")
+            fallback_flags = ["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p"]
+            cmd_fallback = build_cmd(fallback_flags, fast_seek=True)
+            process = subprocess.run(cmd_fallback, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            if process.returncode != 0 and ("could not seek" in process.stderr or "matches no streams" in process.stderr):
+                print(f"[VideoEngine] libx264 fast seek failed. Retrying with accurate decode seek...")
+                cmd_fallback_seek = build_cmd(fallback_flags, fast_seek=False)
+                process = subprocess.run(cmd_fallback_seek, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         if process.returncode != 0:
             raise RuntimeError(f"FFmpeg render failed:\n{process.stderr[-1000:]}")

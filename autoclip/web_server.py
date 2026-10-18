@@ -20,6 +20,8 @@ from autoclip.hook_detector import HookDetector, DetectedClip
 from autoclip.subtitle_generator import WordTimestamp, group_words_into_short_phrases, build_ass_subtitle_file
 from autoclip.video_engine import VideoEngine
 from autoclip.pipeline import AutoClipPipeline
+from autoclip.transcriber import AudioTranscriber
+from autoclip.youtube_uploader import YouTubeUploader
 
 PORT = 7860
 
@@ -318,6 +320,27 @@ HTML_PAGE = """<!DOCTYPE html>
       color: #10b981;
       white-space: nowrap;
     }
+    .money-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 800;
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: rgba(234, 179, 8, 0.15);
+      color: #facc15;
+      border: 1px solid rgba(234, 179, 8, 0.4);
+      white-space: nowrap;
+    }
+    .clip-reason {
+      font-size: 12px;
+      color: #cbd5e1;
+      background: #0d0f17;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin-bottom: 14px;
+      line-height: 1.4;
+    }
     .clip-meta { font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
     .clip-hook {
       background: #08080c;
@@ -416,15 +439,126 @@ HTML_PAGE = """<!DOCTYPE html>
       background: #3b82f6;
       transition: width 0.3s;
     }
+
+    /* YouTube Account Hub */
+    .yt-connect-box {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #14141d;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    .yt-badge {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #ef4444;
+      display: inline-block;
+    }
+    .status-dot.connected {
+      background: #10b981;
+      box-shadow: 0 0 10px #10b981;
+    }
+    .btn-yt-connect {
+      padding: 8px 16px;
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+    }
+    .btn-yt-connect:hover { filter: brightness(1.15); }
+    .btn-yt-disconnect {
+      padding: 6px 12px;
+      background: #27272a;
+      color: #a1a1aa;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 8px;
+    }
+    .btn-yt-disconnect:hover { color: #fff; background: #3f3f46; }
+
+    /* YouTube Clip Card Upload Row */
+    .yt-upload-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      align-items: stretch;
+      width: 100%;
+    }
+    .yt-privacy-select {
+      background: #09090d;
+      border: 1px solid var(--border);
+      color: #e4e4e7;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-family: inherit;
+      outline: none;
+      cursor: pointer;
+    }
+    .btn-yt-upload {
+      flex: 1;
+      padding: 9px 14px;
+      background: linear-gradient(135deg, #e10600, #b91c1c);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(225, 6, 0, 0.3);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn-yt-upload:hover:not(:disabled) {
+      filter: brightness(1.15);
+      transform: translateY(-1px);
+    }
+    .btn-yt-upload:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      background: #27272a;
+      box-shadow: none;
+    }
+    .yt-upload-result {
+      margin-top: 10px;
+      font-size: 13px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #10b981;
+      width: 100%;
+      display: none;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
       <div class="header-left">
-        <div class="badge">🎬 AutoClip AI v1.2</div>
+        <div class="badge">🎬 AutoClip AI • 🤖 Qwen 2.5 Local AI (Metal GPU) • ⚡ ViralCutter 4+ Clips Guaranteed</div>
         <h1>Multi-Channel YouTube Shorts Studio</h1>
-        <p class="subtitle">Auto-categorization, high-speed transcript analysis, and dual-canvas 9:16 vertical render with burned karaoke subtitles.</p>
+        <p class="subtitle">Auto-categorization, local AI transcript analysis, dual-canvas 9:16 vertical render, and direct YouTube Shorts publishing.</p>
+      </div>
+
+      <!-- YouTube Channel Connection Badge & Actions -->
+      <div class="yt-connect-box" id="ytConnectBox">
+        <div class="yt-badge">
+          <span class="status-dot" id="ytStatusDot"></span>
+          <span id="ytStatusText">YouTube: Checking...</span>
+        </div>
+        <button class="btn-yt-connect" id="btnYtConnect" onclick="handleYouTubeAuth()">🔴 Connect Channel</button>
       </div>
     </header>
 
@@ -497,7 +631,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <!-- Action & Status -->
     <div class="action-row">
-      <button class="btn-detect" id="btnDetect" onclick="detectViralHooks()">⚡ Scan & Detect Viral Hooks</button>
+      <button class="btn-detect" id="btnDetect" onclick="detectViralHooks()">⚡ Scan & Detect 4+ Viral Money Makers</button>
       <div class="status-text" id="statusMessage">Paste a URL above and click Auto-Detect or Scan.</div>
     </div>
 
@@ -644,7 +778,7 @@ HTML_PAGE = """<!DOCTYPE html>
       status.innerText = `Extracting subtitles and scoring viral moments for ${selectedProfileId.toUpperCase()} channel...`;
 
       try {
-        const res = await fetch(`/api/detect?url=${encodeURIComponent(url)}&profile=${selectedProfileId}&force=1`);
+        const res = await fetch(`/api/detect?url=${encodeURIComponent(url)}&profile=${selectedProfileId}&force=1&min_clips=4&max_clips=4`);
         const data = await res.json();
         if (data.error) {
           status.innerText = "Error: " + data.error;
@@ -703,10 +837,14 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="clip-card" id="card_${c.id}" style="--card-accent: ${c.color || '#e10600'}">
           <div class="clip-header">
             <div class="clip-title">${c.title}</div>
-            <div class="score-badge">🔥 ${c.virality_score}/100</div>
+            <div style="display: flex; gap: 6px; align-items: center; flex-shrink: 0;">
+              ${c.is_ai_enriched ? '<div class="money-badge">💰 MONEY MAKER</div>' : ''}
+              <div class="score-badge">🔥 ${c.virality_score}/100</div>
+            </div>
           </div>
           <div class="clip-meta">⏱️ ${c.formatted_time_range || c.duration + 's'} • ${c.hashtags ? c.hashtags.slice(0, 3).join(' ') : '#Shorts'}${sizeBadge}</div>
           <div class="clip-hook"><strong>Hook:</strong> "${c.hook}"</div>
+          ${c.reasoning ? `<div class="clip-reason">${c.reasoning}</div>` : ''}
 
           <!-- Video Player Box (shown once rendered) -->
           <div class="player-box ${isRendered ? 'visible' : ''}" id="player_${c.id}">
@@ -717,6 +855,19 @@ HTML_PAGE = """<!DOCTYPE html>
               </a>
               <button class="btn-copy" onclick="copyMeta('${c.id}')">📋 Copy Meta</button>
             </div>
+
+            <!-- YouTube 1-Click Upload to Shorts -->
+            <div class="yt-upload-row">
+              <select class="yt-privacy-select" id="privacy_${c.id}">
+                <option value="public" selected>🌐 Public (Live on Shorts)</option>
+                <option value="unlisted">🔗 Unlisted (Shareable)</option>
+                <option value="private">🔒 Private (Draft)</option>
+              </select>
+              <button class="btn-yt-upload" id="btn_upload_${c.id}" onclick="uploadShortToYouTube('${c.id}', ${idx})" ${isRendered ? '' : 'disabled'}>
+                🚀 Auto-Upload to Shorts
+              </button>
+            </div>
+            <div class="yt-upload-result" id="yt_res_${c.id}"></div>
           </div>
 
           <div class="progress-bar-container" id="prog_${c.id}">
@@ -787,7 +938,10 @@ HTML_PAGE = """<!DOCTYPE html>
           clip.rendered_url = data.video_url;
           clip.file_size_mb = data.file_size_mb;
 
-          status.innerText = `Render complete (${data.file_size_mb} MB)! Click 'Download MP4' to save to your Mac.`;
+          const uploadBtn = document.getElementById(`btn_upload_${clipId}`);
+          if (uploadBtn) uploadBtn.disabled = false;
+
+          status.innerText = `Render complete (${data.file_size_mb} MB)! Ready to download or auto-upload to YouTube Shorts.`;
         } else {
           btn.innerText = "❌ Render Failed";
           btn.disabled = false;
@@ -803,12 +957,146 @@ HTML_PAGE = """<!DOCTYPE html>
     function copyMeta(clipId) {
       const clip = currentClips.find(c => c.id === clipId);
       if (!clip) return;
-      const text = `${clip.title}\n\n${clip.hook}\n\nSubscribe to ${clip.handle || '@AutoClip'}!\n\n${(clip.hashtags || []).join(' ')}`;
+      const text = `${clip.title}\n\n${clip.hook}\n\n${(clip.hashtags || []).join(' ')}`;
       navigator.clipboard.writeText(text);
       alert("Copied YouTube Shorts title and description to clipboard!");
     }
 
+    /* --- YouTube Authentication & 1-Click Upload Logic --- */
+    let isYouTubeConnected = false;
+
+    async function checkYouTubeStatus() {
+      try {
+        const res = await fetch("/api/youtube/status");
+        const data = await res.json();
+        const dot = document.getElementById("ytStatusDot");
+        const text = document.getElementById("ytStatusText");
+        const btn = document.getElementById("btnYtConnect");
+
+        if (data.authenticated && data.channel) {
+          isYouTubeConnected = true;
+          dot.className = "status-dot connected";
+          text.innerHTML = `<strong>${data.channel.title}</strong> (${(data.channel.subscribers || 0).toLocaleString()} subs)`;
+          btn.innerText = "Disconnect";
+          btn.className = "btn-yt-disconnect";
+          btn.onclick = disconnectYouTube;
+        } else {
+          isYouTubeConnected = false;
+          dot.className = "status-dot";
+          text.innerText = data.has_client_secret ? "YouTube: Ready to Connect" : "YouTube: Missing secret";
+          btn.innerText = "🔴 Connect Channel";
+          btn.className = "btn-yt-connect";
+          btn.onclick = handleYouTubeAuth;
+        }
+      } catch (e) {
+        console.warn("YouTube status check error:", e);
+      }
+    }
+
+    async function handleYouTubeAuth() {
+      const btn = document.getElementById("btnYtConnect");
+      const status = document.getElementById("statusMessage");
+      btn.innerText = "⏳ Authorizing...";
+      btn.disabled = true;
+      status.innerText = "Opening Google Sign-In in your browser. Please approve permissions...";
+
+      try {
+        const res = await fetch("/api/youtube/connect", { method: "POST" });
+        const data = await res.json();
+        if (data.status === "success") {
+          status.innerText = `Successfully connected YouTube channel: ${data.channel ? data.channel.title : 'My Channel'}!`;
+          await checkYouTubeStatus();
+        } else {
+          alert("YouTube authorization failed: " + (data.error || "Unknown error"));
+          btn.innerText = "🔴 Connect Channel";
+          btn.disabled = false;
+        }
+      } catch (err) {
+        alert("YouTube auth error: " + err.message);
+        btn.innerText = "🔴 Connect Channel";
+        btn.disabled = false;
+      }
+    }
+
+    async function disconnectYouTube() {
+      if (!confirm("Are you sure you want to disconnect your YouTube channel?")) return;
+      try {
+        await fetch("/api/youtube/disconnect", { method: "POST" });
+        await checkYouTubeStatus();
+        const status = document.getElementById("statusMessage");
+        status.innerText = "YouTube channel disconnected.";
+      } catch (err) {
+        alert("Disconnect error: " + err.message);
+      }
+    }
+
+    async function uploadShortToYouTube(clipId, clipIdx) {
+      if (!isYouTubeConnected) {
+        alert("Please connect your YouTube channel first by clicking '🔴 Connect Channel' in the top header.");
+        return;
+      }
+
+      const clip = currentClips[clipIdx];
+      if (!clip || !clip.rendered_url) {
+        alert("Please render the short first before uploading.");
+        return;
+      }
+
+      const btn = document.getElementById(`btn_upload_${clipId}`);
+      const resBox = document.getElementById(`yt_res_${clipId}`);
+      const privacy = document.getElementById(`privacy_${clipId}`).value;
+      const status = document.getElementById("statusMessage");
+
+      btn.disabled = true;
+      btn.innerText = "⏳ Uploading to Shorts...";
+      status.innerText = `Uploading '${clip.title}' to your YouTube channel (${privacy.toUpperCase()})...`;
+
+      try {
+        const res = await fetch("/api/youtube/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clip_id: clip.id,
+            video_url: clip.rendered_url,
+            title: clip.title,
+            description: `${clip.hook}\n\n${(clip.hashtags || []).join(' ')}`,
+            hashtags: clip.hashtags || [],
+            privacy_status: privacy
+          })
+        });
+
+        const data = await res.json();
+        if (data.status === "success") {
+          btn.innerText = "✅ Uploaded to YouTube!";
+          btn.style.background = "#10b981";
+          btn.disabled = false;
+
+          resBox.style.display = "block";
+          resBox.innerHTML = `
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+              <div>🎉 <strong>Published to Shorts!</strong> (Channel: <strong>${data.channel_title || 'YouTube'}</strong>)</div>
+              <div style="display: flex; gap: 14px; flex-wrap: wrap; margin-top: 4px;">
+                <a href="${data.short_url}" target="_blank" style="color: #60a5fa; text-decoration: underline; font-weight: 700;">▶️ View Live Short ↗️</a>
+                <a href="https://studio.youtube.com/video/${data.video_id}/edit" target="_blank" style="color: #c084fc; text-decoration: underline; font-weight: 700;">⚙️ Open in YouTube Studio ↗️</a>
+              </div>
+            </div>
+          `;
+          status.innerText = `Uploaded successfully to ${data.channel_title}! Live at ${data.short_url}`;
+        } else {
+          btn.innerText = "❌ Upload Failed";
+          btn.disabled = false;
+          alert("YouTube upload error: " + (data.error || "Unknown error"));
+          status.innerText = "Upload error: " + (data.error || "Unknown error");
+        }
+      } catch (err) {
+        btn.innerText = "❌ Upload Error";
+        btn.disabled = false;
+        alert("Upload request error: " + err.message);
+      }
+    }
+
     renderProfiles();
+    checkYouTubeStatus();
   </script>
 </body>
 </html>
@@ -842,6 +1130,17 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(HTML_PAGE.encode("utf-8"))
             return
 
+        elif parsed.path == "/api/youtube/status":
+            uploader = YouTubeUploader()
+            is_auth = uploader.is_authenticated()
+            channel = uploader.get_channel_info() if is_auth else None
+            self._send_json({
+                "authenticated": is_auth,
+                "has_client_secret": uploader.has_client_secret(),
+                "channel": channel
+            })
+            return
+
         elif parsed.path == "/api/inspect":
             url = params.get("url", [""])[0]
             if not url:
@@ -865,6 +1164,8 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path == "/api/detect":
             url = params.get("url", [""])[0]
             profile_id = params.get("profile", ["f1"])[0]
+            min_clips = int(params.get("min_clips", [4])[0])
+            max_clips = int(params.get("max_clips", [max(4, min_clips)])[0])
             force_refresh = "force" in params or params.get("refresh", ["0"])[0] == "1"
 
             if force_refresh and url in TRANSCRIPT_CACHE:
@@ -895,23 +1196,33 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
                     data = json.loads(comp.read_text(encoding="utf-8"))
                     words = [WordTimestamp(w["word"], w["start"], w["end"]) for w in data]
 
-            # 3. Fallback mock if completely offline
+            # 3. Fallback to real speech transcription via Whisper if captions not directly in YouTube
             if not words:
-                mock_words = [
-                    WordTimestamp("Unbelievable", 0.0, 0.7),
-                    WordTimestamp("action", 0.7, 1.2),
-                    WordTimestamp("and", 1.2, 1.4),
-                    WordTimestamp("drama", 1.4, 1.9),
-                    WordTimestamp("in", 1.9, 2.1),
-                    WordTimestamp("today's", 2.1, 2.6),
-                    WordTimestamp("session!", 2.6, 3.4),
-                ]
-                for i in range(4, 30):
-                    mock_words.append(WordTimestamp(f"segment{i}", float(i), float(i) + 0.8))
-                words = mock_words
+                try:
+                    print(f"[Server] Captions not found directly in stream. Running speech recognition...")
+                    if url.startswith("http://") or url.startswith("https://"):
+                        dl_path = extractor.download_youtube_video(url, TEMP_DIR / "downloads")
+                        wav_path = TEMP_DIR / f"{dl_path.stem}.wav"
+                        extractor.extract_audio(dl_path, wav_path)
+                    else:
+                        wav_path = Path(url)
+
+                    transcriber = AudioTranscriber()
+                    words = transcriber.transcribe(wav_path)
+                    if words:
+                        TRANSCRIPT_CACHE[url] = words
+                except Exception as e:
+                    print(f"[Server] Speech recognition failed: {e}")
+
+            if not words or len(words) < 5:
+                self._send_json({
+                    "error": "No speech or subtitles could be detected for this video. Please make sure the video contains clear audio or captions.",
+                    "clips": []
+                }, status=400)
+                return
 
             detector = HookDetector(profile)
-            clips = detector.detect_clips(words, max_clips=4)
+            clips = detector.detect_clips(words, max_clips=max_clips, min_clips=min_clips, use_local_ai=True)
 
             # Store words in cache for render and check if clips are already generated FOR THIS VIDEO
             response_clips = []
@@ -929,6 +1240,8 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
                     "end_seconds": c.end_seconds,
                     "duration": round(c.duration, 1),
                     "virality_score": c.virality_score,
+                    "reasoning": c.reasoning,
+                    "is_ai_enriched": c.is_ai_enriched,
                     "hashtags": c.hashtags,
                     "color": profile.highlight_color,
                     "formatted_time_range": c.formatted_time_range,
@@ -1048,6 +1361,61 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
                 self._send_json({"error": str(e)}, status=500)
             return
 
+        elif parsed.path == "/api/youtube/connect":
+            uploader = YouTubeUploader()
+            try:
+                res = uploader.start_oauth_flow()
+                self._send_json(res)
+            except Exception as e:
+                print(f"[Server] YouTube OAuth error: {e}")
+                self._send_json({"error": str(e)}, status=500)
+            return
+
+        elif parsed.path == "/api/youtube/disconnect":
+            uploader = YouTubeUploader()
+            uploader.disconnect()
+            self._send_json({"status": "disconnected"})
+            return
+
+        elif parsed.path == "/api/youtube/upload":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode("utf-8"))
+            except Exception:
+                self._send_json({"error": "Invalid JSON body"}, status=400)
+                return
+
+            video_rel = data.get("video_url", "").replace("/videos/", "").split("?")[0]
+            video_file = OUTPUT_DIR / video_rel
+            if not video_file.exists():
+                self._send_json({"error": f"Rendered video file not found at {video_file}"}, status=404)
+                return
+
+            title = data.get("title", "Viral Short")
+            description = data.get("description", "")
+            tags = data.get("hashtags", [])
+            privacy_status = data.get("privacy_status", "public")
+
+            uploader = YouTubeUploader()
+            if not uploader.is_authenticated():
+                self._send_json({"error": "YouTube account not connected. Please connect your channel first."}, status=401)
+                return
+
+            try:
+                res = uploader.upload_short(
+                    video_path=video_file,
+                    title=title,
+                    description=description,
+                    tags=tags,
+                    privacy_status=privacy_status
+                )
+                self._send_json(res)
+            except Exception as e:
+                print(f"[Server] YouTube upload error: {e}")
+                self._send_json({"error": str(e)}, status=500)
+            return
+
         self.send_error(404, "Endpoint not found")
 
     def _stream_video_file(self, file_path: Path, as_attachment: bool = False):
@@ -1103,10 +1471,13 @@ class AutoClipServerHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode("utf-8"))
 
 
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def run_server(port: int = PORT):
-    # Enable address reuse so server restarts cleanly
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", port), AutoClipServerHandler) as httpd:
+    with ThreadedHTTPServer(("", port), AutoClipServerHandler) as httpd:
         print(f"[AutoClip Studio] Running at http://localhost:{port}")
         httpd.serve_forever()
 

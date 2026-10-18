@@ -10,7 +10,10 @@ venv/
 
 # AutoClip media & cache
 temp/
-output/**/*.mp4
-output/**/*.wav
+output/
 downloads/
+models/
+credentials/
+client_secret*.json
+*.token.json
 .DS_Store
